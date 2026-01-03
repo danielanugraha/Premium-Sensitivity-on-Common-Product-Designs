@@ -1,0 +1,1772 @@
+---
+title: "Premium Sensitivity on Common Product Designs"
+author: "Daniel Anugraha"
+date: "24 March 2024"
+fontsize: 11pt
+output: 
+  pdf_document:
+    number_sections: true
+header-includes:
+   - \usepackage{actuarialsymbol}
+   - \usepackage{amsmath}
+   - \usepackage{enumitem}
+   - \usepackage{multicol}
+   - \usepackage{caption}
+   - \usepackage{chngcntr}
+   - \counterwithin{figure}{section}
+abstract: |
+  This paper examines the process of calculating life insurance premiums using two commonly used methods: the Equivalence Principle and the Percentile Portfolio Principle. The product design is a whole-life insurance policy with both single and annual payments. The study includes the most commonly used assumptions found in most insurance designs, such as benefits paid, mortality, interest rate, and expenses. A sensitivity analysis is run through these variables, observing different reactions to the final premium amount. The results show that assumptions that are prone to uncertainty in benefit payments, such as age at policy issue and interest rate, exhibit greater sensitivity. In addition, the percentile-based method introduces conservatism that diminishes as portfolio size increases, converging to the equivalence principle under large portfolios. These findings highlight the importance of premium structure and assumptions in balancing affordability, competitiveness, and financial stability when designing an insurance product.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+```{r echo = FALSE, eval = TRUE, message = FALSE}
+  # Import Packages
+  library(latex2exp)
+  library(kableExtra)
+  library(ggplot2)
+  library(tidyverse)
+  library(gridExtra)
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Import Data
+  setwd(getwd()) # Setting the directory file
+  mortality <- read.csv("Project Mortality Data.csv")
+  
+  # Define the default variables (age, interest rate, benefit)
+  int_age <- 60 # The person's current age when he bought mortality
+  benefit <- 100000 # Benefit
+  fixed_exp <- 0 # Fixed Expenses
+  var_exp <- 0 # Variable Expenses (if the variable expense is 0.2 per premium, then replace 0 with 0.2)
+  interest <- 0.06 # Interest rate
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Make px for the data for future calculations
+  px <- numeric()
+  for (i in 1:length(mortality$x)) {
+    px[i] <- 1 - mortality$qx[i]
+  }
+
+  mortality <- mortality %>%
+                tibble(px)
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Function to calculate EPV with $1 Benefit
+  calc_epv <- function(mortality,
+                       int_age,
+                       interest = 0.06,
+                       term = NA,
+                       return_secmoment = FALSE) { # If second moment is needed, usually used if the method is Portfolio Premium
+    
+    # Calculate discount functions
+    v <- (1+interest)^-1
+    d <- 1 - v # Effective Discount
+    
+    # Identify the base age of the mortality data
+    baseage <- mortality$x[1]
+      
+    # Convert p_x into np_x where n = 0, 1, 2, ....
+    npx <- numeric()
+    for (i in 1:(length(mortality$x) + baseage - int_age)) { 
+      if (i == 1) {
+        npx[i] <- mortality$px[int_age - baseage + 1]
+      } else {
+        npx[i] <- npx[i-1] * mortality$px[int_age - baseage + i - 1]
+      }
+    }
+    npx <- c(1, npx) # When n = 0, px = 1 (insured will survive 0 years at age x)
+    
+    # Define k|qx
+    kqx <- numeric()
+    i <- 1
+    while (!is.na(npx[i+1])) { # Starts at k = 0
+      kqx[i] <- npx[i] - npx[i+1]
+      i <- i + 1
+    }
+    
+    # Identifying if it is a term insurance or not
+    epv_yr <- 0 # Set 0 for the sum loop
+    if (is.na(term)) {
+      # Get EPV if the benefit is $1 from obtained k|qx
+      for(k in 1:length(kqx)) {
+        epv_yr <- epv_yr + v^k * kqx[k]
+      }
+    } else {
+      for(k in 1:min(term, length(kqx))) { # Whichever has the shortest period: term or years remaining
+      epv_yr <- epv_yr + v^k * kqx[k]
+      }
+    }
+    
+    # Second moment of the single premium
+    sec_moment_yr <- 0
+    for(k in 1:length(kqx)) {
+      sec_moment_yr <- sec_moment_yr + v^(2*k) * kqx[k]
+    }
+    
+    if(return_secmoment == FALSE) {
+      return(epv_yr)
+    } else {
+      return(list(epv_yr = epv_yr,  sec_moment_yr = sec_moment_yr))
+    }
+  }
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Function to calculate premium values
+  calc_prem_yr <- function(mortality, # Data with columns: (Age, qx, px) as a tibble
+                           int_age, benefit, # Current insured age, Benefit payout
+                           interest = 0.06, # Interest rate, initial based on common life table
+                           method = "ep", # Chooses the method: Equivalence Principle(ep by default) or Portfolio Principle (pppp)
+                           n_pop = 10000, alpha = 0.95, # Number of insured for Portfolio Premium, Confidence level
+                           fixed_exp = 0, var_exp = 0, # Fixed expense and Variable expense fixed to 0
+                           term = NA # If it is a term insurance
+                           ) {
+    
+    # Calculate discount functions
+    v <- (1+interest)^-1
+    d <- 1 - v # Effective Discount
+    
+    # Calculate the EPV for $1 benefit payout
+    calc_epv_result <- calc_epv(mortality, int_age, interest, term, return_secmoment = TRUE)
+    epv_yr <- calc_epv_result$epv_yr # Store the EPV
+    sec_moment_yr <- calc_epv_result$sec_moment_yr # Store the second moment
+    
+    ### Equivalence Principle
+    if (method == "ep") {
+      ## Single Premium using the Equivalence Principle
+      
+      ep_sing_prem_yr <- round((benefit * epv_yr + fixed_exp)/(1 - var_exp), 2) 
+      
+      ## Annual Premium using the Equivalence Principle
+      
+      # Calculating the annuity of $1 Premium
+      andue_x_yr <- (1-epv_yr)/d
+      
+      # Annual Premium using the Equivalence Principle
+      ep_ann_prem_yr <- round((benefit*epv_yr + fixed_exp)/(andue_x_yr * (1 - var_exp)), 2)
+      
+      result <- c(ep_sing_prem_yr, ep_ann_prem_yr) # Result vector
+    } else {
+      ### Calculating using Portfolio Percentile Premium Principle
+      quantileprob <- qnorm(alpha) # The quantile of the loss probability for standardized normal
+      
+      ## Process of calculating the Variance
+      
+      # Variance for $1 benefit payout 
+      var_whole <- sec_moment_yr - epv_yr^2 # Premium variable dissapears since it's a constant
+      sd_whole <- sqrt(var_whole)
+      
+      ## Setting up for the single premium
+      
+      # Mean and Variance with respect to the population and benefit
+      # The mean can't be calculated as it is an equation: E[L] = P - 'EPV of benefit'
+      varpop_loss_sing <- n_pop * benefit^2* var_whole 
+      sdpop_loss_sing <- sqrt(varpop_loss_sing)
+      
+      # Acquiring the single premium for the Portfolio Percentile Premium Principle
+      
+      pppp_sing_prem_yr <- round((fixed_exp + benefit*epv_yr + ((quantileprob * sdpop_loss_sing)/n_pop))/(1 - var_exp),
+                                 2)
+      
+      ## Setting up for the annual premium
+      
+      # Mean and Variance with respect to the population will be an equation that will be solved with CLT
+    
+      # The Mean and Variance can't be calculated since it has a Premium variable which we are supposed to find
+      # The calculations for the Mean, Variance ~ Standard Deviation, to the Premium equations is shown in the paper
+      
+      dummy_a <- (1 - var_exp)/d
+      dummy_q <- epv_yr + (quantileprob*sd_whole)/sqrt(n_pop)
+      pppp_ann_prem_yr <- round( (fixed_exp + benefit*dummy_q) / (dummy_a * (1 - dummy_q)),
+                                2)
+      result <- c(pppp_sing_prem_yr, pppp_ann_prem_yr) # Result vector
+    }
+    
+    return(result)
+  }
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Function that preps the data for plotting with certain conditions given
+  prepplot <- function(data, int_age, benefit, interest = 0.06, # Mortality data and other arguments essential for calc_prem_yr function
+                       method = "ep", n = 10000, alpha = 0.95,
+                       var_exp = 0, fixed_exp = 0, term = NA,
+                       x_var, x_val, # The variable and the range of the x value
+                       n_list = NA, show_ep = TRUE) { # If different sample population provided and if we want to show the Equivalence Principle
+    
+    # Avoid redundancy, we will be using the function below many times
+    calc_prepplot <- function(data, int_age, benefit, interest, 
+                              method, n, alpha,
+                              var_exp, fixed_exp, term,
+                              x_var, x_val) {
+      
+      # Create empty vectors for our calculations
+      premplot_sing <- numeric(length(x_val)) 
+      premplot_ann <- numeric(length(x_val))
+      
+      # Setting up the list of variables we will use in the calc_prem_yr function
+      for(i in seq_along(x_val)) { 
+        func_var <- list(
+          mortality = data,
+          int_age = int_age,
+          benefit = benefit,
+          interest = interest,
+          n = n,
+          alpha = alpha,
+          method = method,
+          fixed_exp = fixed_exp,
+          var_exp = var_exp,
+          term = term
+        ) 
+        
+        func_var[[x_var]] <- x_val[i]
+        
+        vect_result <- do.call(calc_prem_yr, func_var)
+        
+        # Store the result
+        premplot_sing[i] <- vect_result[1] 
+        premplot_ann[i] <- vect_result[2]
+      }
+      
+      # Assign the stored result to prep_plot
+      prep_plot <- tibble( 
+        !!x_var := x_val, # The details of the x value
+        "single_premium" = premplot_sing,
+        "annual_premium" = premplot_ann
+      )
+      
+      return(prep_plot)
+      
+    }
+    
+    # Check if different sample populations are requested to be prepped for Portfolio method
+    if(all(is.na(n_list))) {
+      prepplot_single <- calc_prepplot(data, int_age, benefit, interest, # Return the variable
+                            method, n, alpha,
+                            var_exp, fixed_exp, term,
+                            x_var, x_val) 
+      prep_plot_result <- tibble(n_val = method, data = list(prepplot_single))
+      
+      return(prep_plot_result)
+      
+    } else {
+      
+      # Create an empty tibble for the results
+      prep_plot_result <- tibble() 
+      
+      # Check if we should include Equivalence Principle or not
+      if(show_ep) { 
+        prepplot_ep <- calc_prepplot(data, int_age, benefit, interest,
+                                     method = "ep", n, alpha,
+                                     var_exp, fixed_exp, term,
+                                     x_var, x_val)
+        
+        prep_plot_result <- bind_rows(prep_plot_result, 
+                                      tibble(n_val = as.factor("Equivalence Principle"),
+                                        data = list(prepplot_ep)))
+      }
+      
+      # Calculate with respect to n provided
+      for(i in 1:length(n_list)) {
+        temp_result <- calc_prepplot(data, int_age, benefit, interest,
+                                     method = "pppp", n_list[i], alpha,
+                                     var_exp, fixed_exp, term,
+                                     x_var, x_val)
+        
+        prep_plot_result <- bind_rows(prep_plot_result,
+                                      tibble(n_val = as.factor(n_list[i]),
+                                        data = list(temp_result)))
+      }
+      
+      return(prep_plot_result)
+    }
+  }
+```
+
+```{r echo = FALSE, eval = TRUE}
+  # Function to create the plot for the prepared data
+  make_plotprem <- function(data, xlab = NULL, title = NULL) {
+    # Transform the data
+    data <- data %>% 
+      unnest(col = c(data)) %>%
+      pivot_longer(cols = c("single_premium", "annual_premium"),
+                   names_to = "premium_type",
+                   values_to = "values") %>%
+      mutate(premium_type = recode(premium_type, 
+                                   "single_premium" = "Single Premium",
+                                   "annual_premium" = "Annual Premium"))
+    
+    x_var <- names(data)[2]
+    
+    if(is.null(xlab)) {
+      xlab <- x_var
+    }
+    
+    # Setting up the ggplot
+    plot <- data %>% ggplot(aes(x = .data[[x_var]], y = values, color = as.factor(n_val))) +
+              facet_wrap(~premium_type, scales = "free_y") +
+              theme_minimal() +
+              labs(
+                title = title,
+                x = xlab,
+                y = "Premium Value",
+                color = "Methods",
+                linetype = "Methods"
+              )
+    
+    # Conditional line visibility
+    if ("Equivalence Principle" %in% data$n_val) {
+        # Setting up the legend conditions
+        legend_val <- as.character(data$n_val)
+        legend_val <- setNames(rep("dashed", length(legend_val)), legend_val)
+        legend_val["Equivalence Principle"] <- "solid" # If the method is Equivalence Principle, change it to solid style
+        
+        plot <- plot + 
+          geom_line(aes(
+              linetype = n_val,
+              alpha = n_val == "Equivalence Principle")
+              ) +
+          scale_linetype_manual(
+            values = legend_val,
+            drop = FALSE
+            ) +
+          scale_alpha_manual(
+            values = c("TRUE" = 1, "FALSE" = 0.6),
+            guide = "none"
+            ) 
+    } else {
+      plot <- plot +
+        geom_line()
+    }
+    
+    return(plot)
+  }
+```
+
+# Introduction
+
+This project will focus on dissecting the methods used to calculate premiums. We aim to identify the standard variables involved in determining the premium, as well as the computational method used to obtain the results.
+
+There are two methods for identifying the optimal premium: the Equivalence Principle Premium and the Portfolio Percentile Principle Premium. While they both have similar foundations, the Portfolio Percentile Principle will have more dependency on the sample size of the policyholders and the confidence level of minimizing the loss. 
+
+We will also be analyzing the critical variables in computing the premium such as the benefit amount, age at policy issue, and interest rate. Additionally, we will introduce supplemental variables commonly used in calculating the premium — fixed and variable expenses —that further affect pricing outcomes.
+
+By studying how each variable mentioned in this paper influences the pricing outcome, we hope to gain insight into how each variable affects the premium level. Ultimately, by understanding the effects, we will improve efficiency in variable adjustments to achieve an acceptable, balanced premium level in the pricing process.
+
+\newpage
+
+# Methodology
+
+In this report, we will use two methodology to calculate the premium values:
+
+\begin{itemize}[nosep]
+\item Equivalence Premium Principle 
+\item Portfolio Percentile Premium Principle 
+\end{itemize}
+
+## Definitions and Review
+
+In this paper, we consider a life insurance contract in which the benefit is paid once at the end of the year, upon death. Furthermore, we include two types of premiums: one paid once and the other paid annually at the beginning of the year. Finally, we assume two categories of expenses: 
+
+\begin{itemize}[nosep]
+\item Sum of total initial expenses ($C$): incurred only when policy is issued 
+\item Variable expenses ($c$): contingent to the premium amount (e.g. renewal commision), where $c \ \epsilon \ (0,1)$
+\end{itemize}
+
+Furthermore, we define the variables: 
+\begin{align*}
+B = \text{Benefit} \qquad 
+P = \text{Premium} \qquad  
+C = \text{Fixed Expenses} \qquad
+c = \text{Variable Expenses} \\
+i = \text{interest rate} \qquad
+\text{discount factor } v = \frac{1}{1+i}  \qquad
+\text{discount rate } d = 1 - v 
+\end{align*}
+
+### Present Value of Benefit
+
+The present value of the \$1 benefit payable at the end of death year 
+\begin{align*}
+Z^1 = v^{K_x + 1}
+\end{align*}
+Where the $K_x = \lfloor T_x \rfloor$ is the curate future lifetime. Thus, we have the EPV: 
+\begin{align*}
+E[Z^1] = E[v^{K_x+1}] = \sum_{k=0}^\infty v^{k+1} \qx[k|]{x} = A_x
+\end{align*}
+and the Variance
+\begin{align*}
+Var[Z^1] = \actsymb[][2]{A}{x} - (A_x)^2
+\end{align*}
+where $\actsymb[][2]{A}{x} = \sum_{k=0}^\infty v^{k+1} \qx[k|]{x}$
+
+### Present Value of Premium
+
+The present value of a \$1 premium owed at the beginning of the period, given that the premium holder is still alive is 
+\begin{align*}
+Y^1 = \ax**{K_x + 1}
+\end{align*}
+which gives us the EPV: 
+\begin{align*}
+E[Y^1] = E[\ax**{K_x + 1}] = \frac{1 - v^{K_x + 1}}{d}
+\end{align*}
+and the Variance
+\begin{align*}
+Var[Y^1] = \frac{\actsymb[][2]{A}{x} - (A_x)^2}{d^2}
+\end{align*}
+where $\actsymb[][2]{A}{x} = \sum_{k=0}^\infty v^{k+1} \qx[k|]{x}$
+
+### Equivalence Premium Principle
+
+The Equivalence Premium Principle is set that the loss value is equal to zero. Implying that $E[L_0] = 0$, which also implies that for the net premium calculation: 
+\begin{align*}
+E[\text{PV benefit outgo} - \text{PV net premium income]} = 0
+\end{align*}
+Furthermore, for the gross premium calculation:
+\begin{align*}
+E[\text{PV benefit outgo} + \text{PV expenses} - \text{PV net premium income]} = 0
+\end{align*}
+
+### Portfolio Percentile Premium Principle
+
+The Portfolio Percentile Premium Principle is similar to the Equivalence Principle, but relies on the assumption that the insureds are independent and identically distributed. Due to these assumptions, let:
+\begin{itemize}[nosep]
+\item $N$ denote the number of policyholders in the portfolio 
+\item $L_{0,i}$ denote the loss variable for insureds $i\in (1,N)$, where $i$ is an integer
+\item $L = \sum_{i=1}^N L_{0,i}$ be the sum of every losses in the portfolio.
+\end{itemize}
+
+Under the i.id assumption, we thus have:
+\begin{align*}
+\centering
+E[L] &= \sum_{\forall i} E[L_{0,i}] = N \times E[L_{0,i}] \\
+Var[L] &= \sum_{\forall i} Var[L_{0,i}] = N \times Var[L_{0,i}]
+\end{align*}
+Furthermore, the portfolio percentile premium calculation depends on the confidence level that the loss variable would be less than zero. Let the confidence level be alpha ($\alpha$). Then:
+\begin{align*}
+P[L < 0] = \alpha
+\end{align*}
+Since the policyholders are assumed to be independent and identically distributed, the Central Limit Theorem states that if $N$ is large enough (preferable larger than 25), the distribution would become a normal distribution with mean $N * E[L_{0,i}]$ and Variance $N* Var[L_{0,i}]$ or $L \sim \mathcal{N} \left(NE[L_{0,i}], NVar[L_{0,i}]\right)$. \
+Thus, we have the probability
+\begin{align*}
+P[L < 0] = P\left[\frac{L - E[L]}{\sqrt{Var[L]}} < \frac{-E[L]}{\sqrt{Var[L]}}\right] = \alpha
+\end{align*}
+As a result turning the loss $L$ distribution into a standardized normal distribution $\mathcal{N}(0,1)$. Furthermore,
+\begin{align*}
+-\frac{E[L]}{\sqrt{Var[L]}} = \Phi^{-1}(\alpha)
+\end{align*}
+For future simplicity in the equations, let $\Phi^{-1}(\alpha) = \Phi$ and $\sqrt{Var[v^{K_x+1}]} = SD$
+
+## Calculating the Premium
+
+Now that we have asserted the definitions, we may start the calculation. We consider two types of payments: single premium payment and annual payments.
+
+### Single Premium 
+Single Premium only depends on a single initial payment from the policyholder. As a result, we have the loss variable of a single policyholder
+\begin{align*}
+L &= Bv^{K_x + 1} + C + cP - P \\
+&= Bv^{K_x + 1} + C - (1-c)P
+\end{align*}
+
+\textbf{Equivalence Principle Premium} \
+
+As mentioned, the Equivalence Principle Premium sets the expected loss at zero, which leads to the premium being
+\begin{align*}
+E[L] = E[Bv^{K_x+1} + C + (c-1)P] = 0
+\end{align*}
+Further isolating the premium(P) variable, we will have:
+\begin{align*}
+P_{EP} = \frac{BA_x + C}{1-c}
+\end{align*}
+
+\textbf{Portfolio Percentile Principle} \
+
+Moving along to the Portfolio Percentile Principle, we first identify the mean and variance of the loss variable of a single policyholder.
+\begin{align*}
+E[L_{0,i}] &= E[Bv^{K_x+1} + C - (1-c)P] \\
+&= BA_x + C - (1-c)P
+\end{align*}
+
+and the Variance
+\begin{align*}
+Var[L_{0,i}] &= Var[Bv^{K_x+1} + C - (1-c)P] \\
+&= B^2Var[v^{K_x+1}]
+\end{align*}
+
+As a result, we have the population mean and variance
+\begin{align*}
+E[L] = N (BA_x + C - (1-c)P) \qquad
+Var[L] = N B^2Var[v^{K_x+1}]
+\end{align*}
+
+Applying the Portfolio Principle Premium, we have:
+\begin{align*}
+-\frac{E[L]}{\sqrt{Var[L]}} &= \phi \\
+-\frac{N(BA_x + C - (1-c)P)}{\sqrt{N}B SD} &= \phi \\
+-\frac{N(BA_x + C - (1-c)P)}{\sqrt{N}B SD} &= \phi \\
+BA_x + C - (1-c)P &= -B\frac{SD\phi}{\sqrt{N}} \\
+-(1-c)P &= -B(\frac{SD \phi}{\sqrt{N}} + A_x) - C \\
+(1-c)P &= B(A_x + \frac{SD \phi}{\sqrt{N}}) + C \\
+P_{PP} &= \frac{B(A_x + \frac{SD \phi}{\sqrt{N}}) + C}{1-c}
+\end{align*}
+
+### Annual Premium
+
+Continuing to annual premium, which payment that occurs on the beginning of the year with the condition that the policyholder is still alive. Thus, we will have a slightly more complex equation than the single premium payment. We have the loss random variable:
+\begin{align*}
+L &= Bv^{K_x + 1} + C - (1-c) P \ax**{\angl{K_x+1}}  \\
+&= Bv^{K_x + 1} + C - P \left(\frac{1-c}{d}\right) (1 - v^{K_x+1})
+\end{align*}
+For simplicity, let $\frac{1-c}{d} = a$. Thus, we have the loss variable
+$$L = (B + aP)v^{K_x + 1} - aP + C$$
+
+\textbf{Equivalence Principle} 
+
+Using the same method as we did for the Single Premium, we set the EPV to zero:
+\begin{align*}
+E[L] &= 0 \\
+(B + aP)A_x - aP + C &= 0 \\
+BA_x + aPA_x - aP + C &= 0 \\
+P(a - aA_x) &= BA_x + C \\
+P_{EP} &= \frac{BA_x + C}{a(1 - A_x)}
+\end{align*}
+
+\textbf{Portfolio Percentile Principle} 
+
+We first calculate the expected single loss variable
+\begin{align*}
+E[L_{0,i}] &= (B+aP)A_x - aP + C \\
+&= BA_x + aPA_x - aP + C \\
+&= BA_x + C - aP(1 - A_x)
+\end{align*}
+
+Moving along to the Variance
+\begin{align*}
+Var[L_{0,i}] = (B + aP)^2 Var[v^{K_x + 1}]
+\end{align*}
+
+Thus, we have the expected and variance of the total loss variable
+\begin{align*}
+E[L] &= N(BA_x + C - aP(1 - A_x)) \\
+Var[L] &= N(B + aP)^2 Var[v^{K_x + 1}]
+\end{align*}
+
+Moving along to the Portfolio Percentile Principle equation, we have
+\begin{align*}
+-\frac{E[L]}{\sqrt{Var[L]}} &= \phi \\
+-\frac{N(BA_x + C - aP(1 - A_x))}{\sqrt{N}(B + aP)SD} &= \phi \\
+BA_x + C - aP(1 - A_x) &= - aP\frac{\phi SD}{\sqrt{N}} - \frac{B \phi SD}{\sqrt{N}} \\
+aP(1 - A_x) - aP\frac{\phi SD}{\sqrt{N}} &= BA_x + C + \frac{B \phi SD}{\sqrt{N}} \\
+aP \left(1 - \left(A_x + \frac{\phi SD}{\sqrt{N}}\right)\right) &= B(A_x + \frac{\phi SD}{\sqrt{N}}) + C \\
+\end{align*}
+To simplify the equation, we let $q = A_x + \frac{\phi SD}{\sqrt{N}}$
+\begin{align*}
+aP(1 - q) &= Bq + C \\
+P_{PP} &= \frac{Bq + C}{a(1 - q)}
+\end{align*}
+with $a = \frac{1-c}{d}$
+
+\newpage 
+
+# Analytics
+
+Now that we have established the definitions and premium formulas, we can examine how each variable influences the resulting premium. Throughout the analysis in this paper, unless otherwise stated, the variables will inherit the following values:
+\begin{multicols}{2}
+\begin{itemize}[nosep]
+\item initial age $x$ = 60
+\item benefit $B$ = 100000
+\item interest $i$ = 6%, and
+\item fixed and variable expenses = 0
+\end{itemize}
+\end{multicols}
+
+We will also be recalling the results we have found in the previous section, where:
+\begin{align*}
+\displaystyle q = A_x + \frac{\phi SD}{\sqrt{N}}, \qquad
+\displaystyle a = \frac{1-c}{d}
+\end{align*}
+\begin{table}[h!]
+
+\centering
+\begin{tabular}{c c}
+\textbf{Single Premium} & \textbf{Annual Premium} \\[6pt]
+
+
+$
+\begin{aligned}
+P_{PP} \;&=\; \frac{B\!\left(A_x + \frac{SD\,\phi}{\sqrt{N}}\right) + C}{1-c} \\[8pt]
+P_{EP} \;&=\; \frac{B A_x + C}{1-c}
+\end{aligned}
+$
+&
+$
+\begin{aligned}
+P_{PP} \;&=\; \frac{B q + C}{a(1 - q)} \\[8pt]
+P_{EP} \;&=\; \frac{B A_x + C}{a(1 - A_x)}
+\end{aligned}
+$
+\\
+\end{tabular}
+\end{table}
+
+
+## Population Size and Confidence Level
+
+As previously mentioned, the population size affects the premium value only under the Portfolio Principle method since the Equivalence Principle does not depend on the population size($N$) or the confidence level($\alpha$). The Portfolio Principle introduces additional uncertainty regarding the population size and the confidence level. In this section, we examine how the level of $N$ will affect the convergence of the premium.
+
+\textbf{Single Premium} 
+
+Focusing at the equation that contains $N$ and $\alpha$, we have:
+\begin{align*}
+\frac{SD \phi}{\sqrt{N}}
+\end{align*}
+However, if we have 'enough' policyholder inside our portfolio, we would see that that part of the equation will be non-existent
+\begin{align*}
+\lim_{N \to \infty} \frac{SD \phi}{\sqrt{N}} = 0
+\end{align*}
+Thus, as the number of policyholder inside our portfolio become large enough, we would have the same equation as the Equivalence Principle
+\begin{align*}
+\displaystyle\lim_{N \to \infty} \frac{B\left(A_x + \dfrac{SD \phi}{\sqrt{N}}\right) + C}{1-c} = \frac{BA_x + C}{1-c} = P_{EP}
+\end{align*}
+
+\newpage
+
+\textbf{Annual Premium} 
+
+For the annual premium, the dependence on $N$ appears to be inside the variable $q$: 
+\begin{align*}
+\lim_{N \to \infty} q &= \lim_{N \to \infty} A_x + \frac{\phi SD}{\sqrt{N}} \\
+&= A_x
+\end{align*}
+As a result, we have the Portfolio Percentile equation converging into the Equivalence Principle equation as $N$ increases
+\begin{align*}
+\lim_{N \to \infty} \frac{Bq + C}{a(1 - q)} = \frac{BA_x + C}{a(1 - A_x)} = P_{EP}
+\end{align*}
+Thus, we can conclude that the premium calculated by the Portfolio Percentile method would converge to the Equivalence Principle as the number of policyholders increases, as shown in Figure 3.1. Moreover, it is worth noting that the relevance of the confidence level $\alpha$ diminishes as $N$ increases, indicating confidence that we will not incur losses given that we have enough policyholders, as shown in Figure 3.2.
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Level as Number of Policyholder Increases", out.width = "50%", fig.align = "center"}
+  # Visualization of when the sample size increases 
+  # (Only applies to Portfolio Premium method as Premium Principle doesn't depend on sample size)
+  n_min <- 25 # Define the lowest sample
+  n_max <- 100000 # Define the highest sample size
+  n_range <- seq(n_min, n_max, 50) # Put into sequence to reduce computational lag
+  
+  # Calculate the data for the plot
+  prep_plot_n <- prepplot(mortality, int_age, benefit, 
+                          method = "pppp", 
+                          x_var = "n", x_val = n_range)
+  
+  # Store the plot
+  n_plot <- make_plotprem(prep_plot_n, 
+                xlab = "Number of Insured") 
+  
+  # Apply a horizontal line which represents the Equivalence Principle premium value
+  
+  ep_val_nplot <- calc_prem_yr(mortality, int_age, benefit, # Calculate the values
+                               method = "ep")
+
+  # Apply the values into the plot map
+  n_plot +
+    geom_segment(  # Single premium segment
+      data = tibble(premium_type = "Single Premium", y = ep_val_nplot[1], n_val = "EP"),
+      aes(x = -Inf, xend = Inf, y = y, yend = y, color = n_val),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) +
+    geom_segment(  # Annual premium segment
+      data = tibble(premium_type = "Annual Premium", y = ep_val_nplot[2], n_val = "EP"),
+      aes(x = -Inf, xend = Inf, y = y, yend = y, color = n_val),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) + # Gives color to the line
+    scale_color_manual(values = c("EP" = "red", "pppp" = "black"))
+```
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Level with Respect to Confidence Level", out.width = "50%", fig.align = "center"}
+  # Visualization of when confidence varies
+  cl_min <- 0.2
+  cl_max <- 0.99
+  cl_range <- seq(cl_min, cl_max, 0.01)
+  
+  # Prep data for plotting
+  prep_plot_cl <- prepplot(mortality, int_age, benefit,
+                             x_var = "alpha", x_val = cl_range,
+                             n_list = c(100, 1000, 10000), show_ep = FALSE)  
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_cl,
+                xlab = "Confidence Level")
+```
+
+
+## Actuarial Present Value (EPV) 
+
+The Actuarial Present Value (EPV) is essential for calculating the premium price, as both financial and demographic assumptions drive it. Variables such as the age at which the policy is written and the insurer's investment power reflect the value of the EPV.
+
+We introduced $A_x$ in the definition; it depends on both mortality and the interest rate. It increases with age and decreases with the interest rate. Consequently, as we understand the role of $A_x$, we can better understand the sensitivity of the price to changes in these variables as we dive into detail in this section.
+
+### Age at Policy Issue
+
+The age at which the policy $x$ is issued directly affect the mortality of the insured. As age increases, mortality rate increases monotonically, leading to a higher value of $A_x$ (Figure 3.3). Since $A_x$ represents the discounted value of the benefit paid, higher $A_x$ would lead to larger expected cost for the insurer. Consequently, increasing the premium received to account for the increased expected benefit paid.
+\begin{align*}
+A_x = \sum_{k=0}^\infty v^{k+1} \qx[k|]{x} \tag{3.1}
+\end{align*}
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Behaviour of EPV as Policyholder Entry Age Increases", out.width = "75%", fig.align = "center"}
+  # Moving on to the increase of the insured's age
+  age_range <- c(min(mortality$x):max(mortality$x)) # Identify the minimum age and maximum age in the data
+
+  # Calculate the EPV with respect to policyholder's age when policy is activated
+  epv_plot_age <- numeric(length(age_range))
+  for(i in 1:length(mortality$x)) {
+    epv_plot_age[i] <- calc_epv(mortality, age_range[i], interest)
+  }
+  
+  # Prep the acquired data for plotting
+  vis_epv_qx <- tibble(x = age_range, qx = mortality$qx, Ax = epv_plot_age)
+  vis_epv_qx <- vis_epv_qx %>% pivot_longer(
+                                cols = c("qx", "Ax"),
+                                names_to = "value_type",
+                                values_to = "values"
+                                )
+  
+  vis_epv_qx %>%
+    ggplot(
+      aes(
+        x = x,
+        y = values, 
+        color = as.factor(value_type)
+          )
+      ) +
+    geom_point() +
+    labs(
+      y = NULL,
+      x = "Age when Policy is Bought",
+      color = "Value Type"
+    ) +
+    theme_minimal()
+```
+
+Equation 3.1 shows how $A_x$ affects the pricing for each premium type. Before that, we acknowledge the assumptions: 
+\begin{itemize}[nosep]
+\item $A_x$ $\epsilon$ $[0,1]$
+\item As age at policy issue increases, $A_x$ increases
+\end{itemize}
+
+\newpage
+
+\textbf{Single Premium} 
+
+We notice that for the single premium, $A_x$ scales the benefit paid. Using the assumption, we have
+\begin{align*}
+\lim_{A_x \to 1} P_{EP} &= \lim_{A_x \to 1} \frac{BA_x + C}{1 - c} \\
+&= \dfrac{B + C}{1 - c}
+\end{align*}
+Which leaves us with the benefit and the respected expenses. This makes sense, as if the policyholder immediately dies after the policy is written, the insurer would have no time to invest or pay the premium. 
+
+\textbf{Annual Premium} 
+
+On the other hand, in the annual premium calculation $A_x$. The nominator have the same behaviour as the single premium. However, there's a slight different in the denominator in the annual premium due to $(1 - A_x)$, which amplifies the growth as $A_x$ increases
+\begin{align*}
+\frac{1-c}{d}(1-A_x)
+\end{align*}
+With the fact that $\frac{1-c}{d} > 1$ and as $\lim_{A_x \to 1^-} (1 - A_x)$ results to a very small value. As a result, we would have the denominator scaling the nominator and the overall value, resulting in a monotonically increasing function as $A_x$ increases. Having the same behaviour as the single premium, but with different scaling option, where the annual premium is more aggressive as illustrated in Figure 3.4.
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Policyholder's Age at Issue", out.width = "85%", fig.align = "center"}
+  # Prep data for plotting
+  prep_plot_age <- prepplot(mortality, int_age, benefit,
+                             x_var = "int_age", x_val = age_range,
+                             n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_age, 
+                xlab = "Age at Issue")
+```
+
+We also notice that as the age reaches its limit, the annual premium would converge to the single premium, depending the discount function
+
+### Interest Rate
+
+The interest rate is the insurer's investment power, ensuring the premiums collected are invested to secure the benefits provided in the future. Furthermore, as shown in Figure 3.5, as the insurer's investment power increases, the pricing premium decreases because the insurer cannot effectively grow the premium it receives.
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Value of EPV as investing power increases", out.width = "55%", fig.align = "center"}
+  # Specifying the interest rate range
+  interest_range <- seq(0.01, 0.1, by = 0.01)
+  
+  # Calculate the EPV with respect to the interest rate provided
+  epv_plot_interest <- numeric(length(interest_range))
+  for(i in 1:length(interest_range)) {
+    epv_plot_interest[i] <- calc_epv(mortality, int_age, interest_range[i])
+  }
+
+  # Prep the epv_plot_age for plotting
+  vis_epv_interest <- tibble(i = interest_range, epv = epv_plot_interest)
+  
+  # Plot
+  vis_epv_interest %>%
+    ggplot(
+      aes(
+        x = i,
+        y = epv)
+      ) + 
+      geom_point(color = "red") +
+      geom_line() +
+      labs(
+        x = "interest rate",
+        y = TeX("$A_x$")
+      ) + 
+      theme_minimal()
+```
+
+Since the premium increases with $A_x$, a higher interest rate leads to lower premiums for both single and annual payment structures. This relationship mirrors the effect of age at policy issue, but with a negative relationship; a higher interest rate decreases the final premium, as shown in Figure 3.6
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Respect to Interest Rate", out.width = "75%", fig.align = "center"}
+  # Behaviour of the premium value with respect to the interest
+  # Prep the data for plotting
+  prep_plot_interest <- prepplot(mortality, int_age, benefit,
+                                 x_var = "interest", x_val = interest_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_interest, 
+                xlab = "Interest Rate")
+```
+
+## Benefits Paid
+
+The benefit amount $B$ is the amount the insured is obligated to pay when a claim occurs, which, in turn, heavily affects the premium level. In general, as the benefit paid increases, the premium would increase to account for the future reserves. Shown by both equations, they possess a linear behaviour that can be expressed as:
+\begin{align*}
+P = f(B) = pB + q 
+\end{align*}
+Where $p$ is the slope/rate of change at which the premium increases with the benefit level, and $q$ reflects the fixed component, which is independent of $B$. \
+Thus, different premium payment styles would naturally possess different responses on the level of benefit.
+
+\textbf{Single Premium} 
+
+In the form of $f(B)$, we would have
+\begin{align*}
+f(B) = \left(\frac{A_x}{1-c}\right)B + \frac{C}{1-c}
+\end{align*}
+Showing that the level y-intercept of the premium begins at, depending on the initial expenses($C$) and the variable expenses($c$)
+\begin{align*}
+q = \frac{C}{1-c}
+\end{align*}
+We have the slope as
+\begin{align*}
+p = \frac{A_x}{1-c}
+\end{align*}
+Since $A_x$ and $(1-c)$ $\epsilon$ $[0,1]$. Suggesting that $p > 0$. Indicating a positive linear relationship between the benefit and the single premium
+
+\textbf{Annual Premium} 
+
+For the annual premium, we have
+\begin{align*}
+f(B) = \left(\frac{A_x}{a(1-A_x)}\right) B + \frac{C}{a(1-A_x)}
+\end{align*}
+We have the initial value q
+\begin{align*}
+q = \frac{C}{a(1-A_x)}
+\end{align*}
+and the slope
+\begin{align*}
+p = \frac{A_x}{a(1-A_x)}
+\end{align*}
+where $a = \frac{1-c}{d}$.
+As what have been done in Single Premium, we have that $p > 0$. 
+
+Consequently, as illustrated in Figure 3.7, the premium value and benefit have a positive linear relationship. However, the differences lie in the degree of sensitivity. While the single premium scales directly with the expected present value of the benefit, the annual premium is more sensitive due to its dependence on survival probabilities and payment timings.
+
+\newpage
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Respect to Benefit Paid", out.width = "80%", fig.align = "center"}
+  # Analyzing in terms of benefit paid changes
+  bnft_min <- 1000 # Define the lowest benefit 
+  bnft_max <- 100000 # Define the highest benefit
+  bnft_range <- seq(bnft_min, bnft_max, 100) # Defining plot points for x-axis
+  
+  # Prep data for plotting
+  prep_plot_bnft <- prepplot(mortality, int_age, benefit,
+                             x_var = "benefit", x_val = bnft_range,
+                             n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_bnft, 
+                xlab = "Benefit Paid")
+```
+
+## Expenses
+
+In addition to the benefit payment, expenses are another type of cash outflow that affects the issuance and maintenance of insurance policies. These expenses are incorporated into premium calculations, and, for this paper, we categorize them into two groups: expenses incurred at the policy start date and recurring expenses per premium payment. Each expense affects the premium level differently, as mentioned in this section.
+
+### Fixed Expenses
+
+Fixed expenses, denoted by $C$, represent the costs incurred at the beginning of the policy issue, such as underwriting and administrative fees. Since these expenses are independent of the other variables, they are additive in the calculation. From the equation, both the Single Premium and the Annual Premium equations can be expressed linearly as
+\begin{align*}
+P(C) = pC + q
+\end{align*}
+
+\textbf{Single Premium} 
+
+For the single payment, we have q
+\begin{align*}
+q = \frac{BA_x}{1-c}
+\end{align*}
+Shows the baseline of the premium price when initial expenses are absent
+We have p 
+\begin{align*}
+p = \frac{1}{1-c}
+\end{align*}
+Since $c$ does not accept a value of 1 or higher, we have $p > 0$, concluding that the fixed expenses have a positive linear relationship against the final price. It is also worth noting that the presence of the recurring expense amplifies the impact of fixed expenses on premium increases.
+
+\textbf{Annual Premium} 
+
+As for the annual premium, we show that q
+\begin{align*}
+q = \frac{BA_x}{a(1 - A_x)}
+\end{align*}
+Shows the premium with the absence of the initial expenses.
+We have p
+\begin{align*}
+p = \frac{1}{a(1 - A_x)}
+\end{align*}
+where $a = \frac{1-c}{d}$. \
+$p$ shows that the final price is determined by the policyholder's mortality, recurring expenses, and the insurer's investment power. We see that $0 < a < 1$ and $0 < (1 - A_x) < 1$. Thus, we have that $p > 0$, indicating a positive relationship between fixed expense and the final premium. However, unlike the single premium, the fixed expenses in the annual premium are also influenced by mortality and discounting. Resulting in higher sensitivity with higher EPV. 
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Respect to Fixed Expense Level", out.width = "90%", fig.align = "center"}
+  # Behaviour of the premium value with respect to increase in fixed expense
+  fixedexp_min <- 0
+  fixedexp_max <- benefit*0.2
+  fixedexp_range <- seq(fixedexp_min, fixedexp_max, fixedexp_max*0.01)
+  
+  # Prep the data for plotting
+  prep_plot_fixedexp <- prepplot(mortality, int_age, 100000,
+                                 x_var = "fixed_exp", x_val = fixedexp_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_fixedexp, 
+                xlab = "Fixed Expense")
+```
+
+### Recurring Expenses 
+
+Recurring expenses, denoted by $c$, are costs proportional to the premium amount, such as renewal commissions and administrative charges. Unlike fixed expenses, the recurring expenses act as a scaling factor rather than an additive component.
+
+\textbf{Single Premium}
+
+From the equation itself, it would appear that the recurring expense has a simple multiplier scaling
+\begin{align*}
+(1-c)^{-1} (BA_x + C)
+\end{align*}
+Implying that as c increases, the premium rises at an accelerating rate.
+
+\textbf{Annual Premium}
+
+Isolating the variable c, we have
+\begin{align*}
+(1-c)^{-1} \left(\dfrac{BA_x + C}{\frac{1}{d}(1 - A_x)}\right)
+\end{align*}
+The equation implies that a similar effect is observed in the annual premium, where recurring expenses act as a scaling factor of $(1-c)^{-1}$, with additional factors for discounting and survivability. Even though the annual premium depends on the policyholder's survival, the qualitative impact of the recurring expenses remains the same. As shown in Figure 3.9, the rise of recurring expenses $c$ amplifies the effect on higher premiums, increasing them for both single and annual premiums.
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Respect to Recurring Expense", out.width = "90%", fig.align = "center"}
+  # Behaviour of the premium value with respect to the variable expense
+  varexp_range <- seq(0, 0.65, by = 0.01)
+  
+  # Prep the data for plotting
+  prep_plot_varexp <- prepplot(mortality, int_age, benefit,
+                                 x_var = "var_exp", x_val = varexp_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_varexp, 
+                xlab = "Recurring Expense in Proportion to Premium")
+```
+
+## Term Value
+
+The term value represents the maximum duration for which the insurance policy will be active. Under the term insurance contract, the policy expires at the policyholder's death or at the end of the specified term. A benefit is paid only when death occurs during the term period; otherwise, no benefits are paid. As a result, the inclusion of the term value would affect the final premium through a specified time boundary.
+
+Let $n$ denote the term value. We have the random variable of discounted \$1 benefit paid
+\begin{align*}
+Z^1_{term} = 
+\begin{cases}
+v^{K_x + 1} & \text{if } K_x \le n \\
+0 & \text{if } K_x \ge n
+\end{cases}
+\end{align*}
+Leading us to the EPV $\actsymb{A}{\nthtop{1}{x}:\angln}$
+\begin{align*}
+\actsymb{A}{\nthtop{1}{x}:\angln} = \sum^{n-1}_{k = 0} v^{k+1} \qx[k |]{x}
+\end{align*}
+
+Notice that calculating the EPV is similar to that of whole life insurance, except that the summation is bound by the term value $n$. Thus, as the duration of the term reaches the maximum term value provided by the age, the EPV will converge into a normal whole life EPV. As illustrated in Figure 3.10, the decaying signs of $_{k|}q_x$ and the discount function $v^{K_x+1}$ indicate that increases in the term value $n$ play an insignificant role in the summation of EPV, making the end calculation dismissible. As a result, the term EPV would increase monotonically with $n$ and stabilize at the whole-life EPV as $n$ approaches its maximum value.
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Analysis of $A_{x:n}^{1}$ as n Progress", out.width = "75%", fig.align = "center"}
+  # Create the range of variables
+  chosen_age <- 50 # The int_age for this calculation
+  max_term <- tail(mortality$x, 1) - chosen_age
+  term_range <- c(1:max_term)
+
+  # Calculate k|qx, where k 
+  ## Forming npx
+  base_age <- mortality$x[1]
+  npx_plot <- c(mortality$px[chosen_age - base_age + 1])
+  for(i in 2:length(term_range)) {
+    npx_plot[i] <- npx_plot[i-1] * mortality$px[chosen_age - base_age + i - 1]
+  }
+  
+  ## Calculate k|qx
+  kqx_plot <- numeric()
+  for(i in 1:length(term_range)) {
+    kqx_plot[i] <- npx_plot[i] * mortality$qx[chosen_age - base_age + 1 + i]
+  }
+  
+  # Calculate the EPV with respect to the term provided
+  epv_plot_term <- numeric(length(term_range))
+  for(i in 1:length(epv_plot_term)) {
+    epv_plot_term[i] <- calc_epv(mortality, chosen_age, interest, term_range[i])
+  }
+  
+  # Provide discount function
+  disc_term <- numeric(length(term_range))
+  for(i in 1:length(term_range)) {
+    disc_term[i] <- (1+interest)^-i
+  }
+
+  # Prep the epv_plot_age for plotting
+  vis_epv_term <- tibble(term = term_range, epv = epv_plot_term, kqx = kqx_plot, v = disc_term)
+  vis_epv_term <- vis_epv_term %>%
+                    pivot_longer(
+                      cols = c("epv", "kqx", "v"),
+                      names_to = "value_type",
+                      values_to = "values"
+                    )
+  
+  # Calculate the EPV without term
+  nonterm_epv <- calc_epv(mortality, chosen_age)
+
+  # Plot the prepped data
+  vis_epv_term %>%
+    ggplot(
+      aes(
+        x = term, 
+        y = values, 
+        color = value_type, 
+        alpha = value_type
+        )
+    ) +
+    geom_line() +
+    geom_hline(
+      yintercept = nonterm_epv,
+      linetype = "dashed",
+      color = "red"
+      ) +
+    annotate(
+      "text",
+      x = 1,
+      y = nonterm_epv,
+      parse = TRUE,
+      label = as.character(TeX("$A_x$")),
+      vjust = 1.5,
+      color = "red"
+    ) +
+    labs(
+      x = "term(n)",
+      y = NULL,
+      color = "value"
+    ) +
+    scale_color_manual(
+      values = c(epv = "black", kqx = "blue", v = "lightblue"),
+      labels = c(epv = TeX("$A_{x:n}^{1}$"), kqx = TeX("$_{n|}q_x$"), v = "v")
+    ) +
+    scale_alpha_manual(
+      values = c(epv = 1, kqx = 0.5, v = 0.5),
+      guide = "none"
+    ) +
+    theme_minimal()
+```
+
+The effect on the term EPV mirrors that on the final premium value. As shown in Figure 3.11, the premium increases with the term length and later stabilizes to a value that resembles a whole-life premium level. The behaviour at the right tail of the term data shows similarity in the sensitivity of age at policy issue in Figure 3.3, particularly at higher ages when mortality rates are high.
+
+\newpage
+
+```{r echo = FALSE, eval = TRUE, fig.cap = "Premium Behaviour with Respect to the Rising of Term Value", out.width = "90%", fig.align = "center"}
+  # Prep the data for plotting
+  prep_plot_term <- prepplot(mortality, chosen_age, benefit,
+                                 x_var = "term", x_val = term_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_term, 
+                xlab = "Term Value")
+```
+
+\newpage
+
+# Summary
+
+This section summarizes the results obtained from premium calculations and sensitivity analysis produced in Section 3. In addition to individual variables that was shown in the previous section, this section emphasizes on the impact of key actuarial variables on premium levels and highlights structurual differences between pricing mechanisms.
+
+## Summary of Variable Sensitivity
+
+Across all the variables included in the paper, premium levels are primarily driven by the actuarial present value (EPV) of the benefit. Variables such as age at policy issue, interest rate, benefit amount, expenses, and term length affect premiums indirectly by altering the EPV. 
+
+Among these variables, age at policy issue and the interest rate nonlinearly affect premium levels. Age increases the premium by concentrating mortality at earlier durations, while the interest rate decreases the premium by enhancing the discount function. In contrast, benefit amount and fixed expenses influence premium linearly, scaling the overall premium level with a particular sensitivity pattern. However, recurring expenses differ structurally from the other variables; they serve as a multiplier that amplifies the premium, so a slight increase in recurring expenses leads to a disproportionately higher premium.
+
+## Payment Timings
+
+There is a consistent result across analyses for the two types of premium payments: annual payments are more sensitive than single payments under certain variables. The final form of each premium depends on the same EPV, although annual premiums explicitly incorporate survival probabilities and investment power through their denominators.
+
+The structural difference explains why changes in age at policy issue, interest rate, or term length have a greater effect on annual premiums. As the EPV approaches one, annual premiums increase at an accelerating rate, while single premiums increase proportionately. This is easily seen when calculating premiums for older policyholders and longer policy durations, where mortality risk is concentrated.
+
+This result highlights the trade-off between affordability and risk exposure. While annual premiums are favorable for policyholders because they lower the initial cost, the same is not true for insurers, as they expose insurers to greater sensitivity to demographic and financial assumptions.
+
+## Different Pricing Principles
+
+Comparing the Equivalence Premium Principle and the Portfolio Percentile Premium, the Equivalence Principle always produces lower premiums. The difference is reflected in the method, which takes portfolio size and confidence level in a percentile-based approach, accounting for risk aggregation and variability. 
+
+While both principles react similarly to changes in actuarial assumptions, the Portfolio Percentile Principle introduces an additional layer of assumptions. An increase in confidence level would result in higher premiums, as insurers need to guard against adverse deviation. In addition, as portfolio size increases, the final premium converges into the Equivalence Premium, consistent with the law of large numbers, adding security to the white noise.
+
+These result highlights the distinction between expected-value pricing and risk-based pricing. The Equivalence Principle focuses on breaking even, while the Percentile Principle prioritizes controlling risk. Hinting that the Equivalence Principle is appropriate for large and diversified portfolios, while Portfolio Percentile is used for small portfolios with higher risk.
+
+## Overall Interpretation
+
+Throughout the paper, the results demonstrate that the final premium is driven not only by expected benefit costs but also by the structure to which these costs are financed. Adding new variables would help the policy be more marketable. However, variables that affect timing and uncertainty, such as age at policy issue, interest rate, and payment, heavily inflate the final premium compared to variables that merely scale the benefit size.
+
+The findings emphasize the importance of selecting pricing assumptions, especially for long-term policies or installment-based premiums. For instance, innovative products such as an income-based policy would excel in the market, but can lead to substantial premium differences, especially for older policyholders. However, a few adjustments to the death benefit, while emphasizing the income level, could stabilize the final premium at a more acceptable level. Thus, the importance of understanding each variable's sensitivity in producing a favorable yet acceptable product for both policyholders and the insurer.
+
+\newpage
+
+# Conclusion
+
+This paper examined the determination of life insurance premiums under different actuarial pricing principles, emphasizing how common assumptions influence the premium's sensitivity. By studying the Equivalence Principle and the Portfolio Percentile Principle, the study illustrates how demographic, financial, and structural variables affect the Actuarial Present Value of benefits, thereby influencing the premium outcome.
+
+The results demonstrate that variables affecting the timing and uncertainty of benefit payments, such as age at policy issue, interest rate, term length, and payment structure, exhibit greater sensitivity to premium changes than variables that scale the benefit. For instance, an annual premium is more sensitive to the policyholder's survival than a single payment, as it depends more on the policyholder's survival. Finally, recurring expenses amplify the premium level, underscoring the importance of minimizing them.
+
+Between the two methods, the risk-based approach, the Portfolio Percentile Principle, adds another layer of conservatism by accounting for adverse deviations and portfolio variability. While the Equivalence Principle focuses on expected-based calculations, percentile-based calculations focus on solvency and risk control, as a smaller portfolio and a higher confidence level increase premiums to mitigate the risk. 
+
+In summary, the findings show the importance of selecting pricing assumptions and premium structure when designing life insurance products. Understanding the key drivers of premium sensitivity allows insurers to balance affordability, competitiveness, and financial stability. Future extensions of the paper could introduce new payment or benefit structures, stochastic assumptions, policyholder behaviour, and many more to enhance realism of premium calculations further
+
+\newpage
+
+# Code Index
+
+```{r}
+  # Import Packages
+  library(latex2exp)
+  library(kableExtra)
+  library(ggplot2)
+  library(tidyverse)
+  library(gridExtra)
+```
+
+```{r}
+  # Import Data
+  setwd(getwd()) # Setting the directory file
+  mortality <- read.csv("Project Mortality Data.csv")
+  
+  # Define the default variables (age, interest rate, benefit)
+  int_age <- 60 # The person's current age when he bought mortality
+  benefit <- 100000 # Benefit
+  fixed_exp <- 0 # Fixed Expenses
+  var_exp <- 0 # Variable Expenses (if the variable expense is 0.2 per premium, then replace 0 with 0.2)
+  interest <- 0.06 # Interest rate
+```
+
+```{r}
+  # Make px for the data for future calculations
+  px <- numeric()
+  for (i in 1:length(mortality$x)) {
+    px[i] <- 1 - mortality$qx[i]
+  }
+
+  mortality <- mortality %>%
+                tibble(px)
+```
+
+```{r}
+  # Function to calculate EPV with $1 Benefit
+  calc_epv <- function(mortality,
+                       int_age,
+                       interest = 0.06,
+                       term = NA,
+                       return_secmoment = FALSE) { # If second moment is needed, usually used if the method is Portfolio Premium
+    
+    # Calculate discount functions
+    v <- (1+interest)^-1
+    d <- 1 - v # Effective Discount
+    
+    # Identify the base age of the mortality data
+    baseage <- mortality$x[1]
+      
+    # Convert p_x into np_x where n = 0, 1, 2, ....
+    npx <- numeric()
+    for (i in 1:(length(mortality$x) + baseage - int_age)) { 
+      if (i == 1) {
+        npx[i] <- mortality$px[int_age - baseage + 1]
+      } else {
+        npx[i] <- npx[i-1] * mortality$px[int_age - baseage + i - 1]
+      }
+    }
+    npx <- c(1, npx) # When n = 0, px = 1 (insured will survive 0 years at age x)
+    
+    # Define k|qx
+    kqx <- numeric()
+    i <- 1
+    while (!is.na(npx[i+1])) { # Starts at k = 0
+      kqx[i] <- npx[i] - npx[i+1]
+      i <- i + 1
+    }
+    
+    # Identifying if it is a term insurance or not
+    epv_yr <- 0 # Set 0 for the sum loop
+    if (is.na(term)) {
+      # Get EPV if the benefit is $1 from obtained k|qx
+      for(k in 1:length(kqx)) {
+        epv_yr <- epv_yr + v^k * kqx[k]
+      }
+    } else {
+      for(k in 1:min(term, length(kqx))) { # Whichever has the shortest period: term or years remaining
+      epv_yr <- epv_yr + v^k * kqx[k]
+      }
+    }
+    
+    # Second moment of the single premium
+    sec_moment_yr <- 0
+    for(k in 1:length(kqx)) {
+      sec_moment_yr <- sec_moment_yr + v^(2*k) * kqx[k]
+    }
+    
+    if(return_secmoment == FALSE) {
+      return(epv_yr)
+    } else {
+      return(list(epv_yr = epv_yr,  sec_moment_yr = sec_moment_yr))
+    }
+  }
+```
+
+
+```{r}
+  # Function to calculate premium values
+  calc_prem_yr <- function(mortality, # Data with columns: (Age, qx, px) as a tibble
+                           int_age, benefit, # Current insured age, Benefit payout
+                           interest = 0.06, # Interest rate, initial based on common life table
+                           method = "ep", # Chooses the method: Equivalence Principle(ep by default) or Portfolio Principle (pppp)
+                           n_pop = 10000, alpha = 0.95, # Number of insured for Portfolio Premium, Confidence level
+                           fixed_exp = 0, var_exp = 0, # Fixed expense and Variable expense fixed to 0
+                           term = NA # If it is a term insurance
+                           ) {
+    
+    # Calculate discount functions
+    v <- (1+interest)^-1
+    d <- 1 - v # Effective Discount
+    
+    # Calculate the EPV for $1 benefit payout
+    calc_epv_result <- calc_epv(mortality, int_age, interest, term, return_secmoment = TRUE)
+    epv_yr <- calc_epv_result$epv_yr # Store the EPV
+    sec_moment_yr <- calc_epv_result$sec_moment_yr # Store the second moment
+    
+    ### Equivalence Principle
+    if (method == "ep") {
+      ## Single Premium using the Equivalence Principle
+      
+      ep_sing_prem_yr <- round((benefit * epv_yr + fixed_exp)/(1 - var_exp), 2) 
+      
+      ## Annual Premium using the Equivalence Principle
+      
+      # Calculating the annuity of $1 Premium
+      andue_x_yr <- (1-epv_yr)/d
+      
+      # Annual Premium using the Equivalence Principle
+      ep_ann_prem_yr <- round((benefit*epv_yr + fixed_exp)/(andue_x_yr * (1 - var_exp)), 2)
+      
+      result <- c(ep_sing_prem_yr, ep_ann_prem_yr) # Result vector
+    } else {
+      ### Calculating using Portfolio Percentile Premium Principle
+      quantileprob <- qnorm(alpha) # The quantile of the loss probability for standardized normal
+      
+      ## Process of calculating the Variance
+      
+      # Variance for $1 benefit payout 
+      var_whole <- sec_moment_yr - epv_yr^2 # Premium variable dissapears since it's a constant
+      sd_whole <- sqrt(var_whole)
+      
+      ## Setting up for the single premium
+      
+      # Mean and Variance with respect to the population and benefit
+      # The mean can't be calculated as it is an equation: E[L] = P - 'EPV of benefit'
+      varpop_loss_sing <- n_pop * benefit^2* var_whole 
+      sdpop_loss_sing <- sqrt(varpop_loss_sing)
+      
+      # Acquiring the single premium for the Portfolio Percentile Premium Principle
+      
+      pppp_sing_prem_yr <- round((fixed_exp + benefit*epv_yr + ((quantileprob * sdpop_loss_sing)/n_pop))/(1 - var_exp),
+                                 2)
+      
+      ## Setting up for the annual premium
+      
+      # Mean and Variance with respect to the population will be an equation that will be solved with CLT
+    
+      # The Mean and Variance can't be calculated since it has a Premium variable which we are supposed to find
+      # The calculations for the Mean, Variance ~ Standard Deviation, to the Premium equations is shown in the paper
+      
+      dummy_a <- (1 - var_exp)/d
+      dummy_q <- epv_yr + (quantileprob*sd_whole)/sqrt(n_pop)
+      pppp_ann_prem_yr <- round( (fixed_exp + benefit*dummy_q) / (dummy_a * (1 - dummy_q)),
+                                2)
+      result <- c(pppp_sing_prem_yr, pppp_ann_prem_yr) # Result vector
+    }
+    
+    return(result)
+  }
+```
+
+```{r}
+  # Function that preps the data for plotting with certain conditions given
+  prepplot <- function(data, int_age, benefit, interest = 0.06, # Mortality data and other arguments essential for calc_prem_yr function
+                       method = "ep", n = 10000, alpha = 0.95,
+                       var_exp = 0, fixed_exp = 0, term = NA,
+                       x_var, x_val, # The variable and the range of the x value
+                       n_list = NA, show_ep = TRUE) { # If different sample population provided and if we want to show the Equivalence Principle
+    
+    # Avoid redundancy, we will be using the function below many times
+    calc_prepplot <- function(data, int_age, benefit, interest, 
+                              method, n, alpha,
+                              var_exp, fixed_exp, term,
+                              x_var, x_val) {
+      
+      # Create empty vectors for our calculations
+      premplot_sing <- numeric(length(x_val)) 
+      premplot_ann <- numeric(length(x_val))
+      
+      # Setting up the list of variables we will use in the calc_prem_yr function
+      for(i in seq_along(x_val)) { 
+        func_var <- list(
+          mortality = data,
+          int_age = int_age,
+          benefit = benefit,
+          interest = interest,
+          n = n,
+          alpha = alpha,
+          method = method,
+          fixed_exp = fixed_exp,
+          var_exp = var_exp,
+          term = term
+        ) 
+        
+        func_var[[x_var]] <- x_val[i]
+        
+        vect_result <- do.call(calc_prem_yr, func_var)
+        
+        # Store the result
+        premplot_sing[i] <- vect_result[1] 
+        premplot_ann[i] <- vect_result[2]
+      }
+      
+      # Assign the stored result to prep_plot
+      prep_plot <- tibble( 
+        !!x_var := x_val, # The details of the x value
+        "single_premium" = premplot_sing,
+        "annual_premium" = premplot_ann
+      )
+      
+      return(prep_plot)
+      
+    }
+    
+    # Check if different sample populations are requested to be prepped for Portfolio method
+    if(all(is.na(n_list))) {
+      prepplot_single <- calc_prepplot(data, int_age, benefit, interest, # Return the variable
+                            method, n, alpha,
+                            var_exp, fixed_exp, term,
+                            x_var, x_val) 
+      prep_plot_result <- tibble(n_val = method, data = list(prepplot_single))
+      
+      return(prep_plot_result)
+      
+    } else {
+      
+      # Create an empty tibble for the results
+      prep_plot_result <- tibble() 
+      
+      # Check if we should include Equivalence Principle or not
+      if(show_ep) { 
+        prepplot_ep <- calc_prepplot(data, int_age, benefit, interest,
+                                     method = "ep", n, alpha,
+                                     var_exp, fixed_exp, term,
+                                     x_var, x_val)
+        
+        prep_plot_result <- bind_rows(prep_plot_result, 
+                                      tibble(n_val = as.factor("Equivalence Principle"),
+                                        data = list(prepplot_ep)))
+      }
+      
+      # Calculate with respect to n provided
+      for(i in 1:length(n_list)) {
+        temp_result <- calc_prepplot(data, int_age, benefit, interest,
+                                     method = "pppp", n_list[i], alpha,
+                                     var_exp, fixed_exp, term,
+                                     x_var, x_val)
+        
+        prep_plot_result <- bind_rows(prep_plot_result,
+                                      tibble(n_val = as.factor(n_list[i]),
+                                        data = list(temp_result)))
+      }
+      
+      return(prep_plot_result)
+    }
+  }
+```
+
+
+```{r}
+  # Function to create the plot for the prepared data
+  make_plotprem <- function(data, xlab = NULL, title = NULL) {
+    # Transform the data
+    data <- data %>% 
+      unnest(col = c(data)) %>%
+      pivot_longer(cols = c("single_premium", "annual_premium"),
+                   names_to = "premium_type",
+                   values_to = "values") %>%
+      mutate(premium_type = recode(premium_type, 
+                                   "single_premium" = "Single Premium",
+                                   "annual_premium" = "Annual Premium"))
+    
+    x_var <- names(data)[2]
+    
+    if(is.null(xlab)) {
+      xlab <- x_var
+    }
+    
+    # Setting up the ggplot
+    plot <- data %>% ggplot(aes(x = .data[[x_var]], y = values, color = as.factor(n_val))) +
+              facet_wrap(~premium_type, scales = "free_y") +
+              theme_minimal() +
+              labs(
+                title = title,
+                x = xlab,
+                y = "Premium Value",
+                color = "Methods",
+                linetype = "Methods"
+              )
+    
+    # Conditional line visibility
+    if ("Equivalence Principle" %in% data$n_val) {
+        # Setting up the legend conditions
+        legend_val <- as.character(data$n_val)
+        legend_val <- setNames(rep("dashed", length(legend_val)), legend_val)
+        legend_val["Equivalence Principle"] <- "solid" # If the method is Equivalence Principle, change it to solid style
+        
+        plot <- plot + 
+          geom_line(aes(
+              linetype = n_val,
+              alpha = n_val == "Equivalence Principle")
+              ) +
+          scale_linetype_manual(
+            values = legend_val,
+            drop = FALSE
+            ) +
+          scale_alpha_manual(
+            values = c("TRUE" = 1, "FALSE" = 0.6),
+            guide = "none"
+            ) 
+    } else {
+      plot <- plot +
+        geom_line()
+    }
+    
+    return(plot)
+  }
+```
+
+```{r}
+  # Visualization of when the sample size increases 
+  # (Only applies to Portfolio Premium method as Premium Principle doesn't depend on sample size)
+  n_min <- 25 # Define the lowest sample
+  n_max <- 100000 # Define the highest sample size
+  n_range <- seq(n_min, n_max, 50) # Put into sequence to reduce computational lag
+  
+  # Calculate the data for the plot
+  prep_plot_n <- prepplot(mortality, int_age, benefit, 
+                          method = "pppp", 
+                          x_var = "n", x_val = n_range)
+  
+  # Store the plot
+  n_plot <- make_plotprem(prep_plot_n, 
+                xlab = "Number of Insured") 
+  
+  # Apply a horizontal line which represents the Equivalence Principle premium value
+  
+  ep_val_nplot <- calc_prem_yr(mortality, int_age, benefit, # Calculate the values
+                               method = "ep")
+
+  # Apply the values into the plot map
+  n_plot +
+    geom_segment(  # Single premium segment
+      data = tibble(premium_type = "Single Premium", y = ep_val_nplot[1], n_val = "EP"),
+      aes(x = -Inf, xend = Inf, y = y, yend = y, color = n_val),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) +
+    geom_segment(  # Annual premium segment
+      data = tibble(premium_type = "Annual Premium", y = ep_val_nplot[2], n_val = "EP"),
+      aes(x = -Inf, xend = Inf, y = y, yend = y, color = n_val),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) + # Gives color to the line
+    scale_color_manual(values = c("EP" = "red", "pppp" = "black"))
+```
+
+```{r}
+  # Visualization of when confidence varies
+  cl_min <- 0.2
+  cl_max <- 0.99
+  cl_range <- seq(cl_min, cl_max, 0.01)
+  
+  # Prep data for plotting
+  prep_plot_cl <- prepplot(mortality, int_age, benefit,
+                             x_var = "alpha", x_val = cl_range,
+                             n_list = c(100, 1000, 10000), show_ep = FALSE)  
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_cl, 
+                xlab = "Confidence Level")
+```
+
+```{r}
+  # Moving on to the increase of the insured's age
+  age_range <- c(min(mortality$x):max(mortality$x)) # Identify the minimum age and maximum age in the data  
+
+  # Calculate the EPV with respect to policyholder's age when policy is activated
+  epv_plot_age <- numeric(length(age_range))
+  for(i in 1:length(mortality$x)) {
+    epv_plot_age[i] <- calc_epv(mortality, age_range[i], interest)
+  }
+  
+  # Prep the acquired data for plotting
+  vis_epv_qx <- tibble(x = age_range, qx = mortality$qx, Ax = epv_plot_age)
+  vis_epv_qx <- vis_epv_qx %>% pivot_longer(
+                                cols = c("qx", "Ax"),
+                                names_to = "value_type",
+                                values_to = "values"
+                                )
+  
+  vis_epv_qx %>%
+    ggplot(
+      aes(
+        x = x,
+        y = values, 
+        color = as.factor(value_type)
+          )
+      ) +
+    geom_point() +
+    labs(
+      title = "qx + EPV vs Age when Policy is Bought",
+      y = NULL,
+      x = "Age when Policy is Bought",
+      color = "Value Type"
+    ) +
+    theme_minimal()
+```
+
+```{r}
+  # Prep data for plotting
+  prep_plot_age <- prepplot(mortality, int_age, benefit,
+                             x_var = "int_age", x_val = age_range,
+                             n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_age, 
+                xlab = "Age at Issue")
+```
+
+```{r}
+  # Specifying the interest rate range
+  interest_range <- seq(0.01, 0.1, by = 0.01)
+  
+  # Calculate the EPV with respect to the interest rate provided
+  epv_plot_interest <- numeric(length(interest_range))
+  for(i in 1:length(interest_range)) {
+    epv_plot_interest[i] <- calc_epv(mortality, int_age, interest_range[i])
+  }
+
+  # Prep the epv_plot_age for plotting
+  vis_epv_interest <- tibble(i = interest_range, epv = epv_plot_interest)
+  
+  # Plot
+  vis_epv_interest %>%
+    ggplot(
+      aes(
+        x = i,
+        y = epv)
+      ) + 
+      geom_point(color = "red") +
+      geom_line() +
+      labs(
+        x = "interest rate",
+        y = TeX("$A_x$")
+      ) + 
+      theme_minimal()
+```
+
+```{r}
+  # Behaviour of the premium value with respect to the interest
+  # Prep the data for plotting
+  prep_plot_interest <- prepplot(mortality, int_age, benefit,
+                                 x_var = "interest", x_val = interest_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_interest, 
+                xlab = "Interest Rate", 
+                title = "Premium Behaviour with Respect to Interest Rate")
+```
+
+```{r}
+  # Analyzing in terms of benefit paid changes
+  bnft_min <- 1000 # Define the lowest benefit 
+  bnft_max <- 100000 # Define the highest benefit
+  bnft_range <- seq(bnft_min, bnft_max, 100) # Defining plot points for x-axis
+  
+  # Prep data for plotting
+  prep_plot_bnft <- prepplot(mortality, int_age, benefit,
+                             x_var = "benefit", x_val = bnft_range,
+                             n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_bnft, 
+                xlab = "Benefit Paid")
+```
+
+```{r}
+  # Behaviour of the premium value with respect to increase in fixed expense
+  fixedexp_min <- 0
+  fixedexp_max <- benefit*0.2
+  fixedexp_range <- seq(fixedexp_min, fixedexp_max, fixedexp_max*0.01)
+  
+  # Prep the data for plotting
+  prep_plot_fixedexp <- prepplot(mortality, int_age, 100000,
+                                 x_var = "fixed_exp", x_val = fixedexp_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_fixedexp, 
+                xlab = "Fixed Expense")
+```
+
+```{r}
+  # Behaviour of the premium value with respect to the variable expense
+  varexp_range <- seq(0, 0.65, by = 0.01)
+  
+  # Prep the data for plotting
+  prep_plot_varexp <- prepplot(mortality, int_age, benefit,
+                                 x_var = "var_exp", x_val = varexp_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_varexp, 
+                xlab = "Recurring Expense in Proportion to Premium")
+```
+
+```{r}
+  # Create the range of variables
+  chosen_age <- 50 # The int_age for this calculation
+  max_term <- tail(mortality$x, 1) - chosen_age
+  term_range <- c(1:max_term)
+
+  # Calculate k|qx, where k 
+  ## Forming npx
+  base_age <- mortality$x[1]
+  npx_plot <- c(mortality$px[chosen_age - base_age + 1])
+  for(i in 2:length(term_range)) {
+    npx_plot[i] <- npx_plot[i-1] * mortality$px[chosen_age - base_age + i - 1]
+  }
+  
+  ## Calculate k|qx
+  kqx_plot <- numeric()
+  for(i in 1:length(term_range)) {
+    kqx_plot[i] <- npx_plot[i] * mortality$qx[chosen_age - base_age + 1 + i]
+  }
+  
+  # Calculate the EPV with respect to the term provided
+  epv_plot_term <- numeric(length(term_range))
+  for(i in 1:length(epv_plot_term)) {
+    epv_plot_term[i] <- calc_epv(mortality, chosen_age, interest, term_range[i])
+  }
+  
+  # Provide discount function
+  disc_term <- numeric(length(term_range))
+  for(i in 1:length(term_range)) {
+    disc_term[i] <- (1+interest)^-i
+  }
+
+  # Prep the epv_plot_age for plotting
+  vis_epv_term <- tibble(term = term_range, epv = epv_plot_term, kqx = kqx_plot, v = disc_term)
+  vis_epv_term <- vis_epv_term %>%
+                    pivot_longer(
+                      cols = c("epv", "kqx", "v"),
+                      names_to = "value_type",
+                      values_to = "values"
+                    )
+  
+  # Calculate the EPV without term
+  nonterm_epv <- calc_epv(mortality, chosen_age)
+
+  # Plot the prepped data
+  vis_epv_term %>%
+    ggplot(
+      aes(
+        x = term, 
+        y = values, 
+        color = value_type, 
+        alpha = value_type
+        )
+    ) +
+    geom_line() +
+    geom_hline(
+      yintercept = nonterm_epv,
+      linetype = "dashed",
+      color = "red"
+      ) +
+    annotate(
+      "text",
+      x = 1,
+      y = nonterm_epv,
+      parse = TRUE,
+      label = as.character(TeX("$A_x$")),
+      vjust = 1.5,
+      color = "red"
+    ) +
+    labs(
+      x = "term(n)",
+      y = NULL,
+      color = "value"
+    ) +
+    scale_color_manual(
+      values = c(epv = "black", kqx = "blue", v = "lightblue"),
+      labels = c(epv = TeX("$A_{x:n}^{1}$"), kqx = TeX("$_{n|}q_x$"), v = "v")
+    ) +
+    scale_alpha_manual(
+      values = c(epv = 1, kqx = 0.5, v = 0.5),
+      guide = "none"
+    ) +
+    theme_minimal()
+```
+
+```{r}
+  # Prep the data for plotting
+  prep_plot_term <- prepplot(mortality, chosen_age, benefit,
+                                 x_var = "term", x_val = term_range,
+                                 n_list = c(100, 1000, 10000), show_ep = TRUE)
+  
+  # Insert the data for the plotting
+  make_plotprem(prep_plot_term, 
+                xlab = "Term Value")
+```
+
+
